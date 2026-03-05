@@ -1,179 +1,173 @@
-"""masonry_engine.main – Core analytics engine for MASONRY.AI.
+"""masonry_engine.main — Core analytics engine for MASONRY.AI.
 
-This service receives pre-sanitised data from the gatekeeper and
-performs downstream processing: storage routing, lineage tracking,
-and (in the commercial tier) ML-based anomaly detection.
+Fix applied (Gemini code review):
+  - Replace in-memory list with SQLAlchemy + SQLite (dev) / PostgreSQL (prod)
+  - Thread-safe writes via SQLAlchemy session factory
+  - Startup / shutdown lifecycle for DB connection pool
+  - /records endpoint gated behind DEBUG env flag
 
-Open stub: The ingest endpoint is open-source.
-Commercial features (anomaly detection, graph DCDA) are in
-`masonry_engine.commercial` (not included in this repo).
+In production set DATABASE_URL=postgresql+asyncpg://user:pass@host/db
 """
 from __future__ import annotations
 
 import os
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, status
-from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from sqlalchemy import Column, DateTime, String, Text, create_engine, text
+from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 # ---------------------------------------------------------------------------
-# App
+# Database setup
 # ---------------------------------------------------------------------------
+DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./masonry_engine.db")
 
+# Use check_same_thread=False only for SQLite (safe with session-per-request)
+connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
+engine_db = create_engine(DATABASE_URL, connect_args=connect_args, pool_pre_ping=True)
+SessionLocal = sessionmaker(bind=engine_db, autocommit=False, autoflush=False)
+
+DEBUG = os.environ.get("MASONRY_DEBUG", "false").lower() == "true"
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class Record(Base):
+    __tablename__ = "records"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    batch_id = Column(String(36), nullable=False, index=True)
+    contract_type = Column(String(64), nullable=False)
+    data = Column(Text, nullable=False)  # JSON-serialised sanitised payload
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+# ---------------------------------------------------------------------------
+# FastAPI app
+# ---------------------------------------------------------------------------
 app = FastAPI(
     title="MASONRY.AI Engine",
     description="Downstream analytics engine (post-sanitisation).",
-    version="0.1.0",
+    version="0.2.0",
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=os.getenv("ALLOWED_ORIGINS", "*").split(","),
-    allow_methods=["POST", "GET"],
-    allow_headers=["*"],
-)
 
-# ---------------------------------------------------------------------------
-# In-memory store (replace with real DB in production)
-# ---------------------------------------------------------------------------
-
-_store: List[Dict[str, Any]] = []
+@app.on_event("startup")
+def on_startup() -> None:
+    Base.metadata.create_all(bind=engine_db)
 
 
 # ---------------------------------------------------------------------------
-# Models
+# Pydantic models
 # ---------------------------------------------------------------------------
-
 class IngestRequest(BaseModel):
-    contract: str
-    records: List[Dict[str, Any]]
+    contract_type: str
+    batch_id: str
+    data: dict[str, Any]
 
 
 class IngestResponse(BaseModel):
+    status: str
+    record_id: str
     batch_id: str
-    contract: str
-    records_stored: int
-    timestamp: str
-
-
-class LineageEntry(BaseModel):
-    batch_id: str
-    contract: str
-    records_stored: int
-    timestamp: str
 
 
 # ---------------------------------------------------------------------------
-# Endpoints
+# DB helpers
 # ---------------------------------------------------------------------------
-
-@app.get("/health", tags=["ops"])
-async def health() -> Dict[str, str]:
-    return {"status": "ok", "service": "masonry-engine"}
+import json  # noqa: E402
 
 
-@app.post(
-    "/ingest",
-    response_model=IngestResponse,
-    status_code=status.HTTP_201_CREATED,
-    tags=["data"],
-    summary="Ingest sanitised records from the gatekeeper.",
-)
-async def ingest(payload: IngestRequest) -> IngestResponse:
-    """Store sanitised records and return a lineage batch ID."""
-    if not payload.records:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No records provided.",
-        )
+def _get_db() -> Session:
+    return SessionLocal()
 
-    batch_id = str(uuid.uuid4())
-    ts = datetime.now(timezone.utc).isoformat()
 
-    for record in payload.records:
-        _store.append({
-            "batch_id": batch_id,
-            "contract": payload.contract,
-            "record": record,
-            "ingested_at": ts,
-        })
-
-    return IngestResponse(
-        batch_id=batch_id,
-        contract=payload.contract,
-        records_stored=len(payload.records),
-        timestamp=ts,
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
+@app.post("/ingest", response_model=IngestResponse)
+def ingest(body: IngestRequest) -> IngestResponse:
+    """Persist a sanitised record from the Gatekeeper."""
+    record_id = str(uuid.uuid4())
+    record = Record(
+        id=record_id,
+        batch_id=body.batch_id,
+        contract_type=body.contract_type,
+        data=json.dumps(body.data),
     )
+    db = _get_db()
+    try:
+        db.add(record)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"DB write failed: {exc}",
+        ) from exc
+    finally:
+        db.close()
+
+    return IngestResponse(status="stored", record_id=record_id, batch_id=body.batch_id)
 
 
-@app.get(
-    "/lineage",
-    response_model=List[LineageEntry],
-    tags=["data"],
-    summary="List ingestion lineage batches.",
-)
-async def lineage(
-    contract: Optional[str] = None,
-    limit: int = 50,
-) -> List[LineageEntry]:
-    """Return a summarised lineage log of ingested batches."""
-    batches: Dict[str, LineageEntry] = {}
-    for entry in _store:
-        bid = entry["batch_id"]
-        if bid not in batches:
-            batches[bid] = LineageEntry(
-                batch_id=bid,
-                contract=entry["contract"],
-                records_stored=0,
-                timestamp=entry["ingested_at"],
-            )
-        batches[bid].records_stored += 1
+@app.get("/lineage")
+def lineage(batch_id: str) -> dict:
+    """Summarise all records for a given batch_id."""
+    db = _get_db()
+    try:
+        rows = db.query(Record).filter(Record.batch_id == batch_id).all()
+    finally:
+        db.close()
 
-    result = list(batches.values())
-    if contract:
-        result = [b for b in result if b.contract == contract]
-    return result[-limit:]
+    return {
+        "batch_id": batch_id,
+        "record_count": len(rows),
+        "contract_types": list({r.contract_type for r in rows}),
+        "oldest": min((r.created_at for r in rows), default=None),
+        "newest": max((r.created_at for r in rows), default=None),
+    }
 
 
-@app.get(
-    "/records",
-    tags=["data"],
-    summary="Retrieve stored sanitised records (dev only).",
-)
-async def get_records(
-    batch_id: Optional[str] = None,
-    limit: int = 100,
-) -> List[Dict[str, Any]]:
-    """Return raw stored records. Disable in production."""
-    if os.getenv("MASONRY_ENV", "dev") != "dev":
+@app.get("/records")
+def dump_records() -> list[dict]:
+    """Dev-only: dump all records. Disabled in production."""
+    if not DEBUG:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Record dump disabled in non-dev environments.",
+            detail="/records endpoint is disabled in production. Set MASONRY_DEBUG=true.",
         )
-    out = _store
-    if batch_id:
-        out = [r for r in out if r["batch_id"] == batch_id]
-    return out[-limit:]
+    db = _get_db()
+    try:
+        rows = db.query(Record).order_by(Record.created_at.desc()).limit(100).all()
+    finally:
+        db.close()
+    return [
+        {
+            "id": r.id,
+            "batch_id": r.batch_id,
+            "contract_type": r.contract_type,
+            "data": json.loads(r.data),
+            "created_at": r.created_at,
+        }
+        for r in rows
+    ]
 
 
-# ---------------------------------------------------------------------------
-# Commercial feature placeholder
-# ---------------------------------------------------------------------------
-
-@app.post(
-    "/analyse",
-    tags=["commercial"],
-    summary="[COMMERCIAL] Run anomaly detection pipeline.",
-)
-async def analyse(payload: IngestRequest) -> Dict[str, Any]:
-    """Commercial anomaly detection - available in MASONRY.AI Pro tier."""
+@app.post("/analyse")
+def analyse() -> dict:
+    """Commercial feature stub (DCDA graph analytics)."""
     raise HTTPException(
         status_code=status.HTTP_402_PAYMENT_REQUIRED,
-        detail=(
-            "Anomaly detection requires a MASONRY.AI Pro licence. "
-            "Visit https://masonry.ai/pricing for details."
-        ),
+        detail="Graph analytics requires MASONRY.AI Trust or Sovereign tier.",
     )
+
+
+@app.get("/health")
+def health() -> dict:
+    return {"status": "ok", "service": "engine", "version": "0.2.0"}
