@@ -15,10 +15,7 @@ from __future__ import annotations
 import math
 import os
 from collections import defaultdict
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    import opendp.prelude as _opendp_t
+from typing import Any
 
 try:
     import opendp.prelude as _dp  # type: ignore[import-untyped]
@@ -96,7 +93,6 @@ class DPConfig:
 
         contract_name = type(contract).__name__
         if contract_name == "FinanceContract":
-            # income_range pattern encodes [low, high]; derive sensitivity.
             raw = getattr(contract, "income_range", None)
             if raw:
                 try:
@@ -104,7 +100,7 @@ class DPConfig:
                     low, high = float(parts[0]), float(parts[1])
                     sensitivity = high - low
                 except Exception:
-                    sensitivity = 200_000.0  # conservative fallback
+                    sensitivity = 200_000.0
             numeric_fields = ["credit_score_band"]
             quasi_identifiers = ["age"]
         elif contract_name == "HealthContract":
@@ -153,7 +149,6 @@ def _k_anonymise_record(record: dict[str, Any], quasi_ids: list[str], k: int) ->
     out = dict(record)
     for field in quasi_ids:
         if field in out and isinstance(out[field], int):
-            # Generalise age to 10-year bracket
             out[field] = (out[field] // 10) * 10
     return out
 
@@ -166,13 +161,7 @@ def apply_dp_pipeline(
     config: DPConfig,
     tenant_id: str = "default",
 ) -> dict[str, Any]:
-    """Apply full DP pipeline to a single validated record.
-
-    Steps:
-      1. Check + consume epsilon budget
-      2. k-anonymise quasi-identifiers
-      3. Add calibrated noise to numeric fields
-    """
+    """Apply full DP pipeline to a single validated record."""
     _check_epsilon_budget(tenant_id, config.epsilon)
     out = _k_anonymise_record(record, config.quasi_identifiers, config.k_threshold)
     for field in config.numeric_fields:
@@ -192,12 +181,7 @@ def sanitise(
     quasi_identifiers: list[str] | None = None,
     tenant_id: str = "default",
 ) -> dict[str, Any]:
-    """High-level sanitise used by the Gatekeeper.
-
-    Called with a model_dump() dict; applies k-anonymity and budget tracking.
-    Numeric noise is intentionally skipped at this layer — noise is applied
-    on aggregate query outputs (Layer 3 output filter), not per-record ingest.
-    """
+    """High-level sanitise used by the Gatekeeper."""
     config = DPConfig(
         epsilon=epsilon,
         sensitivity=sensitivity,
