@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "masonry-core"
 version = "0.1.0"
-description = "Open-source privacy primitives for MASONRY.AI – contracts, DP filters, k-anonymisation."
+description = "Open-source privacy primitives for MASONRY.AI — contracts, DP filters, k-anonymisation."
 readme = "README.md"
 license = { text = "AGPL-3.0-or-later" }
 requires-python = ">=3.10"
@@ -51,3 +51,9 @@ target-version = "py310"
 python_version = "3.10"
 strict = true
 ignore_missing_imports = true
+warn_unused_ignores = false
+
+[[tool.mypy.overrides]]
+module = ["opendp.*"]
+ignore_missing_imports = true
+ignore_errors = true
