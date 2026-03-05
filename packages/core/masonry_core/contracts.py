@@ -247,6 +247,10 @@ CONTRACT_REGISTRY: dict[str, type[MasonContract]] = {
     "gdpr_basic": GDPRUserContract,
     "finance_trust": FinanceContract,
     "health_trust": HealthContract,
+        # Short aliases for test compatibility and simpler API
+    "gdpr": GDPRUserContract,
+    "finance": FinanceContract,
+    "health": HealthContract,
 }
 
 
