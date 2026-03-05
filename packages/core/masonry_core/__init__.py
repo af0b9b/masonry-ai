@@ -13,6 +13,10 @@ from .dp_filter import (
     apply_dp_pipeline,
     sanitise,
 )
+from .gatekeeper import (
+    mason_gate,
+    mason_gate_and_sanitise,
+)
 
 __all__ = [
     "MasonContract",
@@ -24,6 +28,8 @@ __all__ = [
     "DPConfig",
     "apply_dp_pipeline",
     "sanitise",
+    "mason_gate",
+    "mason_gate_and_sanitise",
 ]
 
 __version__ = "0.1.0"
