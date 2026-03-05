@@ -82,11 +82,7 @@ class DPConfig:
 
     @classmethod
     def from_contract(cls, contract: MasonContract) -> "DPConfig":
-        """Derive DP config from contract metadata.
-
-        Sensitivity is computed from explicit field bounds where available,
-        falling back to 1.0 so the caller always gets a valid config.
-        """
+        """Derive DP config from contract metadata."""
         sensitivity = 1.0
         numeric_fields: list[str] = []
         quasi_identifiers: list[str] = []
@@ -120,6 +116,7 @@ class DPConfig:
 
 # ---------------------------------------------------------------------------
 # OpenDP-backed noise primitives
+# nan_free=True is required by AbsoluteDistance metric in opendp >= 0.9
 # ---------------------------------------------------------------------------
 def _laplace_noise(value: float, sensitivity: float, epsilon: float) -> float:
     """Add calibrated Laplace noise via opendp (Mironov-safe)."""
@@ -127,7 +124,11 @@ def _laplace_noise(value: float, sensitivity: float, epsilon: float) -> float:
         raise RuntimeError("opendp is not installed. Run: pip install opendp")
     _dp.enable_features("contrib")
     scale = sensitivity / epsilon
-    meas = _dp.m.make_laplace(_dp.atom_domain(T=float), _dp.absolute_distance(T=float), scale)
+    meas = _dp.m.make_laplace(
+        _dp.atom_domain(T=float, nan_free=True),
+        _dp.absolute_distance(T=float),
+        scale,
+    )
     return float(meas(value))
 
 
@@ -137,7 +138,11 @@ def _gaussian_noise(value: float, sensitivity: float, epsilon: float, delta: flo
         raise RuntimeError("opendp is not installed. Run: pip install opendp")
     _dp.enable_features("contrib")
     scale = sensitivity * math.sqrt(2 * math.log(1.25 / delta)) / epsilon
-    meas = _dp.m.make_gaussian(_dp.atom_domain(T=float), _dp.absolute_distance(T=float), scale)
+    meas = _dp.m.make_gaussian(
+        _dp.atom_domain(T=float, nan_free=True),
+        _dp.absolute_distance(T=float),
+        scale,
+    )
     return float(meas(value))
 
 
