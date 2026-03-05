@@ -1,7 +1,7 @@
 """dp_filter.py — Differential Privacy filter for MASONRY.AI
 
 Fix applied (Gemini code review):
-  - Use opendp native make_base_laplace / make_base_gaussian (avoids
+  - Use opendp native make_laplace / make_gaussian (avoids
     Mironov floating-point vulnerability in hand-rolled implementations)
   - Sensitivity derived from contract bounds, not hard-coded
   - Epsilon budget tracker per tenant session (in-process; replace with
@@ -13,12 +13,12 @@ OpenDP docs: https://docs.opendp.org/
 from __future__ import annotations
 
 import math
+import os
 from collections import defaultdict
 from typing import Any
 
 try:
-    import opendp.prelude as dp  # type: ignore
-
+    import opendp.prelude as dp  # noqa: F401
     HAS_OPENDP = True
 except ImportError:  # pragma: no cover
     HAS_OPENDP = False
@@ -91,7 +91,6 @@ class DPConfig:
         quasi_identifiers: list[str] = []
 
         contract_name = type(contract).__name__
-
         if contract_name == "FinanceContract":
             # income_range pattern encodes [low, high]; derive sensitivity.
             raw = getattr(contract, "income_range", None)
@@ -104,11 +103,9 @@ class DPConfig:
                     sensitivity = 200_000.0  # conservative fallback
             numeric_fields = ["credit_score_band"]
             quasi_identifiers = ["age"]
-
         elif contract_name == "HealthContract":
             sensitivity = 1.0
             quasi_identifiers = ["age", "treatment_category"]
-
         elif contract_name == "GDPRUserContract":
             sensitivity = 1.0
             quasi_identifiers = ["age"]
@@ -128,9 +125,10 @@ def _laplace_noise(value: float, sensitivity: float, epsilon: float) -> float:
     """Add calibrated Laplace noise via opendp (Mironov-safe)."""
     if not HAS_OPENDP:
         raise RuntimeError("opendp is not installed. Run: pip install opendp")
-    dp.enable_features("contrib")
+    import opendp.prelude as _dp  # type: ignore[import-untyped]
+    _dp.enable_features("contrib")
     scale = sensitivity / epsilon
-    meas = dp.m.make_base_laplace(dp.atom_domain(T=float), dp.absolute_distance(T=float), scale)
+    meas = _dp.m.make_laplace(_dp.atom_domain(T=float), _dp.absolute_distance(T=float), scale)
     return float(meas(value))
 
 
@@ -138,9 +136,10 @@ def _gaussian_noise(value: float, sensitivity: float, epsilon: float, delta: flo
     """Add calibrated Gaussian noise via opendp (zero-concentrated DP)."""
     if not HAS_OPENDP:
         raise RuntimeError("opendp is not installed. Run: pip install opendp")
-    dp.enable_features("contrib")
+    import opendp.prelude as _dp  # type: ignore[import-untyped]
+    _dp.enable_features("contrib")
     scale = sensitivity * math.sqrt(2 * math.log(1.25 / delta)) / epsilon
-    meas = dp.m.make_base_gaussian(dp.atom_domain(T=float), dp.absolute_distance(T=float), scale)
+    meas = _dp.m.make_gaussian(_dp.atom_domain(T=float), _dp.absolute_distance(T=float), scale)
     return float(meas(value))
 
 
@@ -160,9 +159,6 @@ def _k_anonymise_record(record: dict[str, Any], quasi_ids: list[str], k: int) ->
 # ---------------------------------------------------------------------------
 # Pipeline
 # ---------------------------------------------------------------------------
-import os  # noqa: E402  (after conditional imports)
-
-
 def apply_dp_pipeline(
     record: dict[str, Any],
     config: DPConfig,
@@ -176,9 +172,7 @@ def apply_dp_pipeline(
       3. Add calibrated noise to numeric fields
     """
     _check_epsilon_budget(tenant_id, config.epsilon)
-
     out = _k_anonymise_record(record, config.quasi_identifiers, config.k_threshold)
-
     for field in config.numeric_fields:
         if field in out and isinstance(out[field], (int, float)):
             raw = float(out[field])
@@ -186,7 +180,6 @@ def apply_dp_pipeline(
                 out[field] = _gaussian_noise(raw, config.sensitivity, config.epsilon, config.delta)
             else:
                 out[field] = _laplace_noise(raw, config.sensitivity, config.epsilon)
-
     return out
 
 
