@@ -1,0 +1,42 @@
+# MASONRY.AI – local development stack
+# Usage: docker compose up --build
+#
+# Services:
+#   gatekeeper  – Privacy proxy (port 8000)
+#   engine      – Analytics engine (port 8001)
+
+version: "3.9"
+
+services:
+  gatekeeper:
+    build:
+      context: .
+      dockerfile: packages/gatekeeper/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      MASONRY_ENGINE_URL: "http://engine:8001"
+      MASONRY_ENV: "dev"
+      ALLOWED_ORIGINS: "*"
+    depends_on:
+      - engine
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  engine:
+    build:
+      context: .
+      dockerfile: packages/engine/Dockerfile
+    ports:
+      - "8001:8001"
+    environment:
+      MASONRY_ENV: "dev"
+      ALLOWED_ORIGINS: "http://gatekeeper:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
