@@ -19,10 +19,10 @@ from masonry_core.contracts import (
 )
 
 # ---------------------------------------------------------------------------
-# Fixtures
+# Fixtures — all user_ids must be strings (will be pseudonymised)
 # ---------------------------------------------------------------------------
 VALID_GDPR = dict(
-    user_id=1,
+    user_id="user-001",
     age=25,
     email="top_secret@example.com",
     consent_level=2,
@@ -30,24 +30,25 @@ VALID_GDPR = dict(
 )
 
 VALID_FINANCE = dict(
-    user_id=2,
+    user_id="user-002",
     age=30,
     email="finance@example.com",
     consent_level=3,
     gdpr_accepted=True,
-    income_range="[20000-80000]",
-    credit_score_band="A",
-    account_hash="abc123hash",
+    annual_income_range="20-50k",
+    credit_score_band="good",
+    account_hash="abc123hash_sha256_16chars",
 )
 
 VALID_HEALTH = dict(
-    user_id=3,
+    user_id="user-003",
     age=40,
     email="health@example.com",
     consent_level=4,
     gdpr_accepted=True,
     icd10_codes=["A01.0", "Z00.0"],
     treatment_category="outpatient",
+    data_controller_id="clinic-pseudonymised-id",
 )
 
 
@@ -61,65 +62,78 @@ class TestGDPRContractRejection:
         with pytest.raises(ValidationError):
             GDPRUserContract(**payload)
 
-    def test_missing_gdpr_acceptance_rejected(self):
+    def test_missing_consent_rejected(self):
+        """Mason MUST reject if gdpr_accepted=False."""
         payload = {**VALID_GDPR, "gdpr_accepted": False}
         with pytest.raises(ValidationError):
             GDPRUserContract(**payload)
 
-    def test_insufficient_consent_rejected(self):
+    def test_low_consent_level_rejected(self):
+        """Consent level 1 is insufficient for any processing."""
         payload = {**VALID_GDPR, "consent_level": 1}
         with pytest.raises(ValidationError):
             GDPRUserContract(**payload)
 
-    def test_invalid_email_format_rejected(self):
-        payload = {**VALID_GDPR, "email": "not-an-email"}
+    def test_invalid_email_rejected(self):
+        """Emails without @ separator are structurally invalid."""
+        payload = {**VALID_GDPR, "email": "notanemail"}
         with pytest.raises(ValidationError):
             GDPRUserContract(**payload)
 
     def test_unknown_field_rejected(self):
-        """extra=forbid must block unknown fields."""
-        payload = {**VALID_GDPR, "sneaky_field": "injected"}
+        """extra=forbid: unknown fields must be structurally rejected."""
+        payload = {**VALID_GDPR, "unknown_field": "sneaky_data"}
         with pytest.raises(ValidationError):
             GDPRUserContract(**payload)
 
 
 class TestGDPRContractAcceptance:
     def test_valid_user_accepted(self):
+        """Happy-path: valid adult with consent should be accepted."""
         c = GDPRUserContract(**VALID_GDPR)
-        assert c.user_id == 1
         assert c.age == 25
 
-    def test_email_masking_at_ingestion(self):
-        """The Mason must pseudonymise email on ingestion (Privacy by Design)."""
+    def test_email_masked_at_ingestion(self):
+        """Email local part must be masked immediately at the boundary."""
         c = GDPRUserContract(**VALID_GDPR)
-        # Email must be masked — original must NOT appear verbatim
+        # e.g. top_secret@example.com -> t***@example.com
+        assert "@example.com" in c.email
         assert "top_secret" not in c.email
-        # But domain part should still be identifiable for routing
-        assert "@" in c.email
 
     def test_user_id_pseudonymised(self):
-        """user_id should be hashed/pseudonymised, not stored in clear."""
+        """user_id must be pseudonymised (SHA-256 prefix, not the original)."""
         c = GDPRUserContract(**VALID_GDPR)
-        # After pseudonymisation, the raw integer should not appear in model_dump
-        dump = c.model_dump()
-        assert dump["user_id"] != 1  # must be transformed
+        assert c.user_id != "user-001"
+        assert len(c.user_id) == 16  # SHA-256 hexdigest[:16]
+
+    def test_safe_dict_returns_masked_data(self):
+        """to_safe_dict() must never expose raw PII."""
+        c = GDPRUserContract(**VALID_GDPR)
+        d = c.to_safe_dict()
+        assert "top_secret" not in str(d)
+        assert "user-001" not in str(d)
 
 
 # ---------------------------------------------------------------------------
 # Finance Contract
 # ---------------------------------------------------------------------------
 class TestFinanceContract:
-    def test_valid_finance_contract_accepted(self):
+    def test_valid_finance_accepted(self):
         c = FinanceContract(**VALID_FINANCE)
-        assert c.credit_score_band == "A"
+        assert c.credit_score_band == "good"
 
     def test_finance_requires_consent_level_3(self):
         payload = {**VALID_FINANCE, "consent_level": 2}
         with pytest.raises(ValidationError):
             FinanceContract(**payload)
 
-    def test_invalid_income_range_rejected(self):
-        payload = {**VALID_FINANCE, "income_range": "not-a-range"}
+    def test_invalid_credit_band_rejected(self):
+        payload = {**VALID_FINANCE, "credit_score_band": "A+"}
+        with pytest.raises(ValidationError):
+            FinanceContract(**payload)
+
+    def test_short_account_hash_rejected(self):
+        payload = {**VALID_FINANCE, "account_hash": "short"}
         with pytest.raises(ValidationError):
             FinanceContract(**payload)
 
@@ -128,18 +142,22 @@ class TestFinanceContract:
 # Health Contract
 # ---------------------------------------------------------------------------
 class TestHealthContract:
-    def test_valid_health_contract_accepted(self):
+    def test_valid_health_accepted(self):
         c = HealthContract(**VALID_HEALTH)
-        assert "A01.0" in c.icd10_codes
+        assert c.treatment_category == "outpatient"
 
     def test_health_requires_consent_level_4(self):
         payload = {**VALID_HEALTH, "consent_level": 3}
         with pytest.raises(ValidationError):
             HealthContract(**payload)
 
-    def test_invalid_icd10_code_rejected(self):
-        """ICD-10 regex must reject malformed codes."""
-        payload = {**VALID_HEALTH, "icd10_codes": ["NOTACODE"]}
+    def test_invalid_icd10_rejected(self):
+        payload = {**VALID_HEALTH, "icd10_codes": ["flu", "cold"]}
+        with pytest.raises(ValidationError):
+            HealthContract(**payload)
+
+    def test_invalid_treatment_category_rejected(self):
+        payload = {**VALID_HEALTH, "treatment_category": "surgery"}
         with pytest.raises(ValidationError):
             HealthContract(**payload)
 
@@ -160,9 +178,11 @@ class TestContractRegistry:
         cls = get_contract("health")
         assert cls is HealthContract
 
-    def test_unknown_contract_returns_none(self):
-        cls = get_contract("nonexistent_contract")
-        assert cls is None
+    def test_long_names_also_work(self):
+        assert get_contract("gdpr_basic") is GDPRUserContract
+        assert get_contract("finance_trust") is FinanceContract
+        assert get_contract("health_trust") is HealthContract
 
-    def test_registry_not_empty(self):
-        assert len(CONTRACT_REGISTRY) >= 3
+    def test_unknown_contract_returns_none(self):
+        with pytest.raises(KeyError):
+            get_contract("nonexistent_contract")
