@@ -143,7 +143,7 @@ class TestFinanceContract:
 class TestHealthContract:
     def test_valid_health_accepted(self):
         c = HealthContract(**VALID_HEALTH)
-                assert c.treatment_category == "diagnostic"
+        assert c.treatment_category == "diagnostic"
 
     def test_health_requires_consent_level_4(self):
         payload = {**VALID_HEALTH, "consent_level": 3}
