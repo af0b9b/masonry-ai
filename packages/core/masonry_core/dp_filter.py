@@ -116,7 +116,7 @@ class DPConfig:
 
 # ---------------------------------------------------------------------------
 # OpenDP-backed noise primitives
-# nan_free=True is required by AbsoluteDistance metric in opendp >= 0.9
+# nan=False excludes NaN from atom_domain (required for AbsoluteDistance metric in opendp >= 0.8)
 # ---------------------------------------------------------------------------
 def _laplace_noise(value: float, sensitivity: float, epsilon: float) -> float:
     """Add calibrated Laplace noise via opendp (Mironov-safe)."""
@@ -125,7 +125,7 @@ def _laplace_noise(value: float, sensitivity: float, epsilon: float) -> float:
     _dp.enable_features("contrib")
     scale = sensitivity / epsilon
     meas = _dp.m.make_laplace(
-        _dp.atom_domain(T=float, nan_free=True),
+                    _dp.atom_domain(T=float, nan=False),
         _dp.absolute_distance(T=float),
         scale,
     )
@@ -139,7 +139,7 @@ def _gaussian_noise(value: float, sensitivity: float, epsilon: float, delta: flo
     _dp.enable_features("contrib")
     scale = sensitivity * math.sqrt(2 * math.log(1.25 / delta)) / epsilon
     meas = _dp.m.make_gaussian(
-        _dp.atom_domain(T=float, nan_free=True),
+                    _dp.atom_domain(T=float, nan=False),
         _dp.absolute_distance(T=float),
         scale,
     )
