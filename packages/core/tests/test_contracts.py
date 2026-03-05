@@ -46,7 +46,7 @@ VALID_HEALTH = dict(
     consent_level=4,
     gdpr_accepted=True,
     icd10_codes=["A01.0", "Z00.0"],
-    treatment_category="outpatient",
+            treatment_category="diagnostic",
     data_controller_id="clinic-pseudonymised-id",
 )
 
@@ -143,7 +143,7 @@ class TestFinanceContract:
 class TestHealthContract:
     def test_valid_health_accepted(self):
         c = HealthContract(**VALID_HEALTH)
-        assert c.treatment_category == "outpatient"
+                assert c.treatment_category == "diagnostic"
 
     def test_health_requires_consent_level_4(self):
         payload = {**VALID_HEALTH, "consent_level": 3}
