@@ -11,8 +11,7 @@ import pytest
 from pydantic import ValidationError
 
 from masonry_core.contracts import (
-    CONTRACT_REGISTRY,
-    FinanceContract,
+  FinanceContract,
     GDPRUserContract,
     HealthContract,
     get_contract,
