@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "masonry-gatekeeper"
+version = "0.2.0"
+description = "MASONRY.AI Gatekeeper — Layer 1 structural validation proxy"
+readme = "README.md"
+license = { text = "AGPL-3.0" }
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "httpx>=0.27",
+    "pydantic>=2.0",
+    "slowapi>=0.1.9",
+    "masonry-core>=0.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "httpx>=0.27",
+    "ruff>=0.4",
+    "mypy>=1.9",
+    "bandit>=1.7",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["masonry_gatekeeper"]
