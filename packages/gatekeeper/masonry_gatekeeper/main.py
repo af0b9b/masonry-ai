@@ -1,182 +1,184 @@
-"""masonry_gatekeeper.main – FastAPI proxy that enforces Mason contracts.
+"""MASONRY.AI — Gatekeeper Service (Layer 1: Structural/Mason)
 
-This is the OPEN-SOURCE gatekeeper layer. It:
-  1. Validates incoming data against a named MasonContract.
-  2. Applies the DP sanitisation pipeline (masonry_core.dp_filter).
-  3. Forwards the clean payload to the downstream engine.
-
-Start with:
-    uvicorn masonry_gatekeeper.main:app --reload
+Fix applied (Gemini code review):
+  - API Key authentication via X-Masonry-Key header
+  - SlowAPI rate limiting (60 req/min per IP)
+  - Structured audit log for rejected data (no PII)
+  - Async httpx forward to Engine with timeout + 502 handling
 """
 from __future__ import annotations
 
+import logging
 import os
+import time
+import uuid
+from typing import Any
+
 import httpx
-from typing import Any, Dict, List, Optional
+from fastapi import Depends, FastAPI, HTTPException, Request, Security, status
+from fastapi.security.api_key import APIKeyHeader
+from pydantic import BaseModel, ValidationError
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
-from fastapi import FastAPI, HTTPException, Request, status
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
-
-from masonry_core import get_contract, sanitise
-from masonry_core.contracts import MasonContract
+from masonry_core.contracts import CONTRACT_REGISTRY, get_contract
+from masonry_core.dp_filter import sanitise
 
 # ---------------------------------------------------------------------------
-# App setup
+# Logging
 # ---------------------------------------------------------------------------
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("masonry.gatekeeper")
 
+# ---------------------------------------------------------------------------
+# Rate limiter (SlowAPI)
+# ---------------------------------------------------------------------------
+limiter = Limiter(key_func=get_remote_address)
+
+# ---------------------------------------------------------------------------
+# API Key Auth
+# ---------------------------------------------------------------------------
+API_KEY_NAME = "X-Masonry-Key"
+_api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=True)
+
+VALID_API_KEYS: set[str] = set(
+    filter(None, os.environ.get("MASONRY_API_KEYS", "dev-secret").split(","))
+)
+
+
+async def require_api_key(api_key: str = Security(_api_key_header)) -> str:
+    """Validate API key. In production load from DB/Vault."""
+    if api_key not in VALID_API_KEYS:
+        log.warning("Rejected request — invalid API key")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid or missing X-Masonry-Key",
+        )
+    return api_key
+
+
+# ---------------------------------------------------------------------------
+# App
+# ---------------------------------------------------------------------------
 app = FastAPI(
     title="MASONRY.AI Gatekeeper",
-    description="Privacy-by-default data proxy – open-source layer.",
-    version="0.1.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
+    description="Layer 1 — Structural validation + Differential Privacy filter",
+    version="0.2.0",
 )
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=os.getenv("ALLOWED_ORIGINS", "*").split(","),
-    allow_methods=["POST", "GET"],
-    allow_headers=["*"],
-)
-
-ENGINE_URL = os.getenv("MASONRY_ENGINE_URL", "http://localhost:8001")
+ENGINE_URL = os.environ.get("ENGINE_URL", "http://engine:8001")
 
 
 # ---------------------------------------------------------------------------
-# Request / Response models
+# Pydantic models
 # ---------------------------------------------------------------------------
-
 class GatekeeperRequest(BaseModel):
-    contract: str = Field(
-        ...,
-        description="Name of the MasonContract to enforce (e.g. 'gdpr_basic').",
-        example="gdpr_basic",
-    )
-    records: List[Dict[str, Any]] = Field(
-        ...,
-        description="List of data records to validate and sanitise.",
-    )
-    epsilon_override: Optional[float] = Field(
-        None,
-        description="Override privacy budget epsilon (advanced users).",
-        ge=0.001,
-        le=10.0,
-    )
-    forward_to_engine: bool = Field(
-        True,
-        description="If True, forward sanitised payload to the engine service.",
-    )
+    contract_type: str
+    payload: dict[str, Any]
 
 
 class GatekeeperResponse(BaseModel):
-    contract_used: str
-    records_in: int
-    records_out: int
-    sanitised_records: List[Dict[str, Any]]
-    engine_response: Optional[Dict[str, Any]] = None
+    status: str
+    batch_id: str | None = None
+    sanitised: dict[str, Any] | None = None
+    rejection_reason: str | None = None
 
 
 # ---------------------------------------------------------------------------
-# Health
+# Internal helpers
 # ---------------------------------------------------------------------------
+def _audit_rejection(request_id: str, contract_type: str, reason: str) -> None:
+    """Structured rejection log — no raw PII emitted."""
+    log.warning(
+        "MASON_REJECT | request_id=%s contract=%s reason=%s ts=%f",
+        request_id,
+        contract_type,
+        reason,
+        time.time(),
+    )
 
-@app.get("/health", tags=["ops"])
-async def health() -> Dict[str, str]:
-    return {"status": "ok", "service": "masonry-gatekeeper"}
+
+async def _forward_to_engine(
+    sanitised_payload: dict[str, Any],
+    contract_type: str,
+    batch_id: str,
+) -> dict[str, Any]:
+    """Forward validated + DP-sanitised data to the Engine service."""
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(
+            f"{ENGINE_URL}/ingest",
+            json={
+                "contract_type": contract_type,
+                "batch_id": batch_id,
+                "data": sanitised_payload,
+            },
+        )
+        resp.raise_for_status()
+        return resp.json()
 
 
 # ---------------------------------------------------------------------------
-# Core endpoint
+# Routes
 # ---------------------------------------------------------------------------
+@app.post("/sanitise", response_model=GatekeeperResponse)
+@limiter.limit("60/minute")
+async def sanitise_endpoint(
+    request: Request,
+    body: GatekeeperRequest,
+    _key: str = Depends(require_api_key),
+) -> GatekeeperResponse:
+    """Validate payload against Data Contract, apply DP filter, forward to Engine."""
+    request_id = str(uuid.uuid4())
 
-@app.post(
-    "/sanitise",
-    response_model=GatekeeperResponse,
-    status_code=status.HTTP_200_OK,
-    tags=["privacy"],
-    summary="Validate, sanitise, and optionally forward data.",
-)
-async def sanitise_endpoint(payload: GatekeeperRequest) -> GatekeeperResponse:
-    # 1. Resolve contract
-    try:
-        contract_cls: type[MasonContract] = get_contract(payload.contract)
-    except KeyError as exc:
+    # 1. Resolve contract class
+    ContractClass = get_contract(body.contract_type)
+    if ContractClass is None:
+        _audit_rejection(request_id, body.contract_type, "unknown_contract")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc),
+            detail=f"Unknown contract type: {body.contract_type}",
         )
 
-    # 2. Validate each record against the contract schema
-    validated: List[Dict[str, Any]] = []
-    errors: List[str] = []
-    for idx, record in enumerate(payload.records):
-        try:
-            obj = contract_cls(**record)
-            validated.append(obj.model_dump())
-        except Exception as exc:  # pydantic ValidationError
-            errors.append(f"record[{idx}]: {exc}")
+    # 2. Structural validation (Mason Fail-Fast)
+    try:
+        validated = ContractClass(**body.payload)
+    except (ValidationError, ValueError) as exc:
+        reason = str(exc)
+        _audit_rejection(request_id, body.contract_type, reason)
+        return GatekeeperResponse(status="rejected", rejection_reason=reason)
 
-    if errors:
+    # 3. Differential Privacy sanitisation
+    safe_data = sanitise(validated.model_dump())
+
+    # 4. Forward to Engine
+    batch_id = str(uuid.uuid4())
+    try:
+        await _forward_to_engine(safe_data, body.contract_type, batch_id)
+    except httpx.HTTPError as exc:
+        log.error("Engine unreachable: %s", exc)
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={"validation_errors": errors},
-        )
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Downstream engine unavailable",
+        ) from exc
 
-    # 3. DP sanitisation
-    contract_instance = contract_cls(**validated[0]) if validated else contract_cls()
-    clean = sanitise(
-        validated,
-        contract_instance,
-        epsilon_override=payload.epsilon_override,
-    )
-
-    # 4. (Optional) forward to engine
-    engine_resp: Optional[Dict[str, Any]] = None
-    if payload.forward_to_engine:
-        try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.post(
-                    f"{ENGINE_URL}/ingest",
-                    json={"contract": payload.contract, "records": clean},
-                )
-                resp.raise_for_status()
-                engine_resp = resp.json()
-        except httpx.HTTPStatusError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Engine returned {exc.response.status_code}: {exc.response.text}",
-            )
-        except httpx.RequestError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=f"Engine unreachable: {exc}",
-            )
-
+    log.info("MASON_ACCEPT | request_id=%s batch_id=%s", request_id, batch_id)
     return GatekeeperResponse(
-        contract_used=payload.contract,
-        records_in=len(payload.records),
-        records_out=len(clean),
-        sanitised_records=clean,
-        engine_response=engine_resp,
+        status="accepted",
+        batch_id=batch_id,
+        sanitised=safe_data,
     )
 
 
-# ---------------------------------------------------------------------------
-# Contract introspection
-# ---------------------------------------------------------------------------
+@app.get("/contracts")
+async def list_contracts(_key: str = Depends(require_api_key)) -> dict:
+    """Introspection: list available Data Contracts."""
+    return {"contracts": list(CONTRACT_REGISTRY.keys())}
 
-@app.get("/contracts", tags=["meta"])
-async def list_contracts() -> Dict[str, Any]:
-    """List all available contracts and their required fields."""
-    from masonry_core.contracts import CONTRACT_REGISTRY
-    result = {}
-    for name, cls in CONTRACT_REGISTRY.items():
-        schema = cls.model_json_schema()
-        result[name] = {
-            "title": schema.get("title"),
-            "required": schema.get("required", []),
-            "properties": list(schema.get("properties", {}).keys()),
-        }
-    return result
+
+@app.get("/health")
+async def health() -> dict:
+    """Health check — no auth required."""
+    return {"status": "ok", "service": "gatekeeper", "version": "0.2.0"}
