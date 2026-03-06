@@ -96,6 +96,18 @@ mason_gate(GDPRUserContract, {"age": 15, ...})
 
 ---
 
+## Documentazione
+
+Consulta la documentazione dettagliata per approfondire il funzionamento di MASONRY.AI:
+
+- [**Architettura**](docs/architecture.md): Il flusso dei dati a 3 livelli e i principi di Zero Trust.
+- [**Core Library**](docs/core-library.md): Guida all'uso dei Data Contracts e dei Privacy Predicates.
+- [**Gatekeeper Service**](docs/gatekeeper-service.md): API, autenticazione e validazione in ingresso.
+- [**Engine & DCDA**](docs/engine-dcda.md): Elaborazione stateless e Decision Nodes.
+- [**Contribuire**](docs/contributing.md): Guida allo sviluppo e struttura del repository.
+
+---
+
 ## Repository Structure
 
 ```text
