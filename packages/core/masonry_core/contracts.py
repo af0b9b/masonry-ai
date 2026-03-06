@@ -1,102 +1,37 @@
-"""
-masonry_core.contracts
-======================
-Core Data Contracts for MASONRY.AI - Privacy by Mason implementation.
-
-Each contract is a Pydantic model that acts as the Mason gate:
-- Non-conforming data is REJECTED at ingestion (fail-fast)
-- PII is masked/pseudonymized at the boundary
-- Privacy predicates are structural, not policy-based
-
-License: AGPL-3.0 (open source)
-"""
+"""Core Data Contracts for MASONRY.AI - Privacy by Mason implementation."""
 
 from __future__ import annotations
 
-import hashlib
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from .predicates import PrivacyPredicate
 
-# ---------------------------------------------------------------------------
-# Privacy Predicates
-# ---------------------------------------------------------------------------
-
-class PrivacyPredicate:
-    """Reusable privacy predicates. Replaces formal type theory."""
-
-    @staticmethod
-    def mask_email(value: str) -> str:
-        """Mask email local part, keeping domain. Masks at ingestion."""
-        parts = value.split("@")
-        if len(parts) != 2:
-            raise ValueError("Invalid email format")
-        local = parts[0]
-        masked = (local[0] + "***") if len(local) > 1 else "***"
-        return f"{masked}@{parts[1]}"
-
-    @staticmethod
-    def pseudonymize(value: str) -> str:
-        """Deterministic pseudonymization via SHA-256."""
-        return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
-
-    @staticmethod
-    def mask_partial(value: str, keep: int = 2) -> str:
-        """Keep first N chars, mask the rest."""
-        if len(value) <= keep:
-            return "*" * len(value)
-        return value[:keep] + "*" * (len(value) - keep)
-
-
-# ---------------------------------------------------------------------------
-# Base Contract
-# ---------------------------------------------------------------------------
 
 class MasonContract(BaseModel):
-    """
-    Base Mason Contract.
+    """Base contract: strict schema at the ingestion boundary."""
 
-    All customer schemas inherit from this. Config forbids extra fields
-    (Structural Privacy: the container defines what is admissible).
-    """
-
-    class Config:
-        extra = "forbid"  # No unknown fields allowed. Ever.
-        populate_by_name = True
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     def to_safe_dict(self) -> dict[str, Any]:
-        """Export safe (already masked) data as dict."""
         return self.model_dump()
 
 
-# ---------------------------------------------------------------------------
-# Tier 1: GDPR Basic Contract (Shield tier - SMB)
-# ---------------------------------------------------------------------------
-
 class GDPRUserContract(MasonContract):
-    """
-    GDPR Basic Contract - ready-to-use for SMB/startups.
-    Activation: 5 minutes. Zero math required.
-
-    Mason gates enforced:
-    - Age > 18 (structural constraint)
-    - GDPR must be explicitly accepted
-    - Email masked at ingestion boundary
-    - user_id pseudonymized at ingestion boundary
-    - Consent level >= 2 required
-    """
+    """GDPR baseline contract for general user data."""
 
     user_id: str = Field(description="Will be pseudonymized at ingestion")
-    age: int = Field(gt=0, lt=150, description="Must be > 18 for most data processing")
+    age: int = Field(gt=0, lt=150, description="Must be > 18 for most processing")
     email: str = Field(description="Will be masked at ingestion")
     consent_level: int = Field(
-        ge=1, le=4,
-        description="1=basic, 2=marketing, 3=AI-processing, 4=full"
+        ge=1,
+        le=4,
+        description="1=basic, 2=marketing, 3=AI-processing, 4=full",
     )
-    gdpr_accepted: bool = Field(description="Must be True. No exceptions.")
-    ingested_at: datetime = Field(default_factory=datetime.utcnow)
+    gdpr_accepted: bool = Field(description="Must be True")
+    ingested_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @field_validator("user_id")
     @classmethod
@@ -140,34 +75,21 @@ class GDPRUserContract(MasonContract):
         return v
 
 
-# ---------------------------------------------------------------------------
-# Tier 2: Finance Contract (Trust tier - Mid-Market FinTech)
-# ---------------------------------------------------------------------------
-
 class FinanceContract(GDPRUserContract):
-    """
-    Finance/FinTech Contract - Mid-Market.
-
-    Extends GDPR base with financial data constraints:
-    - No exact amounts (only ranges)
-    - No raw account numbers (only hashes)
-    - Consent level >= 3 required for financial data
-    """
+    """Finance contract with stricter constraints."""
 
     annual_income_range: str = Field(
         pattern=r"^(0-20k|20-50k|50-100k|100-200k|200k\+)$",
-        description="Range only. Exact income is never stored."
+        description="Range only. Exact income is never stored.",
     )
     credit_score_band: str = Field(
         pattern=r"^(poor|fair|good|very_good|exceptional)$",
-        description="Band only. Exact score is never stored."
+        description="Band only. Exact score is never stored.",
     )
-    account_hash: str = Field(
-        description="SHA-256 of account number. Never the raw number."
-    )
+    account_hash: str = Field(description="SHA-256 of account number.")
     transaction_count_range: Optional[str] = Field(
         default=None,
-        pattern=r"^(0-10|10-50|50-200|200\+)$"
+        pattern=r"^(0-10|10-50|50-200|200\+)$",
     )
 
     @field_validator("consent_level")
@@ -175,7 +97,7 @@ class FinanceContract(GDPRUserContract):
     def finance_requires_level3(cls, v: int) -> int:
         if v < 3:
             raise ValueError(
-                f"MASON STOP: Financial data requires consent_level >= 3. "
+                "MASON STOP: Financial data requires consent_level >= 3. "
                 f"Got {v}. Data rejected."
             )
         return v
@@ -191,36 +113,21 @@ class FinanceContract(GDPRUserContract):
         return v
 
 
-# ---------------------------------------------------------------------------
-# Tier 2: Health Contract (Trust tier - Mid-Market Healthcare)
-# ---------------------------------------------------------------------------
-
 class HealthContract(GDPRUserContract):
-    """
-    Healthcare Contract - Mid-Market (clinics, telemedicine, pharma).
+    """Health contract for Art.9-like sensitive data."""
 
-    Special category data (Art. 9 GDPR):
-    - Explicit consent level 4 required
-    - Diagnosis codes (ICD-10) allowed, free text diagnoses forbidden
-    - No direct patient identifiers beyond pseudonymized user_id
-    """
-
-    icd10_codes: list[str] = Field(
-        description="ICD-10 codes only. No free-text diagnoses."
-    )
+    icd10_codes: list[str] = Field(description="ICD-10 codes only.")
     treatment_category: str = Field(
         pattern=r"^(preventive|diagnostic|therapeutic|rehabilitative|palliative)$"
     )
-    data_controller_id: str = Field(
-        description="Healthcare provider identifier (pseudonymized)"
-    )
+    data_controller_id: str = Field(description="Healthcare provider identifier")
 
     @field_validator("consent_level")
     @classmethod
     def health_requires_level4(cls, v: int) -> int:
         if v < 4:
             raise ValueError(
-                f"MASON STOP: Special category health data requires "
+                "MASON STOP: Special category health data requires "
                 f"explicit consent (level 4). Got {v}. Data rejected."
             )
         return v
@@ -229,6 +136,7 @@ class HealthContract(GDPRUserContract):
     @classmethod
     def validate_icd10(cls, v: list[str]) -> list[str]:
         import re
+
         pattern = re.compile(r"^[A-Z][0-9]{2}(\.[0-9A-Z]{1,4})?$")
         for code in v:
             if not pattern.match(code):
@@ -239,15 +147,10 @@ class HealthContract(GDPRUserContract):
         return v
 
 
-# ---------------------------------------------------------------------------
-# Contract Registry
-# ---------------------------------------------------------------------------
-
 CONTRACT_REGISTRY: dict[str, type[MasonContract]] = {
     "gdpr_basic": GDPRUserContract,
     "finance_trust": FinanceContract,
     "health_trust": HealthContract,
-        # Short aliases for test compatibility and simpler API
     "gdpr": GDPRUserContract,
     "finance": FinanceContract,
     "health": HealthContract,
@@ -255,10 +158,7 @@ CONTRACT_REGISTRY: dict[str, type[MasonContract]] = {
 
 
 def get_contract(name: str) -> type[MasonContract]:
-    """Retrieve a contract class by name."""
     if name not in CONTRACT_REGISTRY:
         available = list(CONTRACT_REGISTRY.keys())
-        raise KeyError(
-            f"Contract '{name}' not found. Available: {available}"
-        )
+        raise KeyError(f"Contract '{name}' not found. Available: {available}")
     return CONTRACT_REGISTRY[name]

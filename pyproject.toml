@@ -1,0 +1,15 @@
+[tool.masonry]
+name = "masonry-ai"
+description = "Monorepo configuration for Masonry AI packages."
+
+[tool.pytest.ini_options]
+pythonpath = ["packages/core"]
+
+[tool.uv.workspace]
+members = [
+  "packages/core",
+  "packages/gatekeeper",
+  "packages/engine",
+  "packages/api",
+]
+

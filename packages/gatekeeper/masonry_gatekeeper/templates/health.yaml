@@ -1,0 +1,5 @@
+name: health-default
+contract: health
+rules:
+  - min_consent_level: 4
+  - require_icd10: true

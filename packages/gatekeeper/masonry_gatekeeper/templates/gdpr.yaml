@@ -1,0 +1,5 @@
+name: gdpr-default
+contract: gdpr
+rules:
+  - require: gdpr_accepted
+  - min_consent_level: 2

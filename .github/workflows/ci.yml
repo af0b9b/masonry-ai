@@ -92,7 +92,7 @@ jobs:
 
       - name: Smoke test — app import
         working-directory: packages/gatekeeper
-        run: python -c "from masonry_gatekeeper.main import app; print('Gatekeeper OK')"
+        run: python -c "from masonry_gatekeeper.proxy import app; print('Gatekeeper OK')"
 
       - name: Performance benchmark — /health latency
         working-directory: packages/gatekeeper
@@ -102,7 +102,7 @@ jobs:
           import subprocess, time, httpx, sys
 
           proc = subprocess.Popen(
-              ["uvicorn", "masonry_gatekeeper.main:app", "--port", "9999"],
+              ["uvicorn", "masonry_gatekeeper.proxy:app", "--port", "9999"],
               stdout=subprocess.PIPE, stderr=subprocess.PIPE
           )
           time.sleep(3)  # wait for startup

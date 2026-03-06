@@ -13,6 +13,7 @@ import pytest
 from masonry_core.dp_filter import (
     EPSILON_MAX_PER_TENANT,
     DPConfig,
+    HAS_OPENDP,
     _check_epsilon_budget,
     _k_anonymise_record,
     apply_dp_pipeline,
@@ -96,6 +97,7 @@ class TestKAnonymity:
 # Noise injection
 # ---------------------------------------------------------------------------
 class TestNoiseInjection:
+    @pytest.mark.skipif(not HAS_OPENDP, reason="opendp is not installed")
     def test_laplace_noise_modifies_value(self):
         """With epsilon=0.01 (strong noise), the output must differ from input."""
         cfg = DPConfig(epsilon=0.01, sensitivity=100.0, numeric_fields=["score"])
@@ -105,6 +107,7 @@ class TestNoiseInjection:
         # Statistical: probability of identical result is negligible
         assert out["score"] != 500.0
 
+    @pytest.mark.skipif(not HAS_OPENDP, reason="opendp is not installed")
     def test_noise_pipeline_does_not_modify_non_numeric(self):
         cfg = DPConfig(epsilon=1.0, sensitivity=1.0, numeric_fields=["score"])
         reset_epsilon_budget("noise-test2")

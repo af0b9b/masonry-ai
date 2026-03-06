@@ -1,0 +1,5 @@
+name: finance-default
+contract: finance
+rules:
+  - min_consent_level: 3
+  - require_account_hash: true

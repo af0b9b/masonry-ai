@@ -89,15 +89,19 @@ class DPConfig:
 
         contract_name = type(contract).__name__
         if contract_name == "FinanceContract":
-            raw = getattr(contract, "income_range", None)
+            raw = getattr(contract, "annual_income_range", None)
             if raw:
                 try:
-                    parts = raw.strip("[]").split("-")
-                    low, high = float(parts[0]), float(parts[1])
-                    sensitivity = high - low
+                    if raw.endswith("k+"):
+                        sensitivity = 200_000.0
+                    else:
+                        low_raw, high_raw = raw.split("-")
+                        low = float(low_raw.replace("k", "")) * 1000
+                        high = float(high_raw.replace("k", "")) * 1000
+                        sensitivity = high - low
                 except Exception:
                     sensitivity = 200_000.0
-            numeric_fields = ["credit_score_band"]
+            numeric_fields = []
             quasi_identifiers = ["age"]
         elif contract_name == "HealthContract":
             sensitivity = 1.0

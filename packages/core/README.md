@@ -5,6 +5,7 @@
 ## Packages
 
 - `masonry_core.contracts` — Pydantic v2 Data Contracts (GDPR, Finance, Health)
+- `masonry_core.predicates` — Reusable privacy predicates (masking/pseudonymisation)
 - `masonry_core.dp_filter` — OpenDP-backed DP sanitisation pipeline
 
 ## Install

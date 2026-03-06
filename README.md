@@ -90,7 +90,7 @@ safe = mason_gate(GDPRUserContract, {
 # safe.user_id == "a3f9bc12..."     <- pseudonymized
 
 # This data is REJECTED (age < 18)
-masonry_gate(GDPRUserContract, {"age": 15, ...})
+mason_gate(GDPRUserContract, {"age": 15, ...})
 # Raises: ValidationError - MASON STOP: age must be > 18
 ```
 
@@ -98,25 +98,38 @@ masonry_gate(GDPRUserContract, {"age": 15, ...})
 
 ## Repository Structure
 
-```
-masonry-ai/                          <- Monorepo (Turborepo)
-├── packages/
-│   ├── core/                        <- @masonry/core [OPEN SOURCE]
-│   │   ├── masonry_core/
-│   │   │   ├── contracts.py         <- Data Contracts + Privacy Predicates
-│   │   │   ├── gatekeeper.py        <- Mason gate function
-│   │   │   └── dp_filter.py         <- OpenDP wrapper (Layer 3)
-│   ├── gatekeeper/                  <- @masonry/gatekeeper [OPEN SOURCE]
-│   │   └── masonry_gatekeeper/
-│   │       ├── proxy.py             <- FastAPI proxy (Layer 1)
-│   │       └── templates/           <- Sector templates (GDPR, Health, Finance)
-│   ├── engine/                      <- @masonry/engine [PROPRIETARY - Cloud]
-│   │   └── masonry_engine/
-│   │       ├── graph.py             <- DCDA Decision Graph
-│   │       ├── nodes.py             <- Stateless Decision Nodes
-│   │       └── stability.py         <- Turbulence score (DCDA)
-│   └── api/                         <- @masonry/api [PROPRIETARY - Cloud]
-└── pyproject.toml
+```text
+masonry-ai/
+├── README.md
+├── pyproject.toml
+└── packages/
+    ├── core/                        <- @masonry/core [OPEN SOURCE]
+    │   └── masonry_core/
+    │       ├── contracts.py         <- Data Contract base
+    │       ├── predicates.py        <- Privacy predicates
+    │       ├── dp_filter.py         <- OpenDP wrapper (Layer 3)
+    │       └── gatekeeper.py        <- Local Mason gate helper
+    ├── gatekeeper/                  <- @masonry/gatekeeper [OPEN SOURCE]
+    │   └── masonry_gatekeeper/
+    │       ├── proxy.py             <- FastAPI proxy (Layer 1)
+    │       ├── main.py              <- Service entrypoint
+    │       └── templates/           <- GDPR/Health/Finance templates
+    ├── engine/                      <- @masonry/engine [PROPRIETARY]
+    │   └── masonry_engine/
+    │       ├── graph.py             <- DCDA Decision Graph
+    │       ├── nodes.py             <- Stateless Decision Nodes
+    │       ├── stability.py         <- Turbulence score
+    │       └── main.py              <- Service entrypoint
+    ├── api/                         <- @masonry/api [PROPRIETARY]
+    │   └── masonry_api/
+    │       ├── main.py              <- FastAPI app
+    │       ├── tenants.py           <- Multi-tenancy helpers
+    │       └── audit.py             <- Immutable-style audit log
+    └── dashboard/                   <- @masonry/dashboard [PROPRIETARY]
+        └── src/
+            ├── app/
+            └── components/
+                └── DecisionGraph.tsx
 ```
 
 ---

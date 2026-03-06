@@ -8,6 +8,7 @@ from .contracts import (
     CONTRACT_REGISTRY,
     get_contract,
 )
+from .predicates import PrivacyPredicate
 from .dp_filter import (
     DPConfig,
     apply_dp_pipeline,
@@ -25,6 +26,7 @@ __all__ = [
     "HealthContract",
     "CONTRACT_REGISTRY",
     "get_contract",
+    "PrivacyPredicate",
     "DPConfig",
     "apply_dp_pipeline",
     "sanitise",
